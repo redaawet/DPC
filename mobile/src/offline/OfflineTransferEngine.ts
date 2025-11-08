@@ -1,13 +1,6 @@
-import { BleManager, Device } from 'react-native-ble-plx';
-
 import { MAX_HOPS, MAX_OFFLINE_BALANCE } from '../core/constants';
 import type { DigitalNote, PublicKey } from '../core/types';
 import { getNoteOwner, signTransfer, verifyBankSignature, verifyTransferChain } from '../util/crypto';
-
-export interface TransferSession {
-  peerDevice: Device;
-  peerPublicKey: PublicKey;
-}
 
 export interface TransferValidationResult {
   ok: boolean;
@@ -15,24 +8,6 @@ export interface TransferValidationResult {
 }
 
 export class OfflineTransferEngine {
-  private bleManager = new BleManager();
-
-  async scanForPeers(onDeviceDiscovered: (device: Device) => void) {
-    await this.bleManager.startDeviceScan(null, { allowDuplicates: false }, (error, device) => {
-      if (error) {
-        console.warn('BLE scan error', error);
-        return;
-      }
-      if (device) {
-        onDeviceDiscovered(device);
-      }
-    });
-  }
-
-  stopScan() {
-    this.bleManager.stopDeviceScan();
-  }
-
   buildTransferPayload(
     note: DigitalNote,
     senderPrivateKey: string,
