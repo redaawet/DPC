@@ -1,10 +1,15 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { Alert, FlatList, SafeAreaView, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Alert, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { StatusBar } from 'expo-status-bar';
+import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
+
+import type { DigitalNote } from './src/core/types';
+import { OfflineTransferEngine } from './src/offline/OfflineTransferEngine';
+import { useBluetoothTransfer } from './src/offline/useBluetoothTransfer';
 import { StatusBar } from 'expo-status-bar';
 
 import { MAX_OFFLINE_BALANCE } from './src/core/constants';
 import type { DigitalNote } from './src/core/types';
-import { OfflineTransferEngine } from './src/offline/OfflineTransferEngine';
 import {
   createInitialWalletState,
   ensureKeyPair,
@@ -47,10 +52,6 @@ const useWallet = () => {
     });
   }, []);
 
-  const refreshNotes = async () => {
-    await updateNotes(notes);
-  };
-
   return {
     initializing,
     publicKey,
@@ -59,9 +60,17 @@ const useWallet = () => {
     notes,
     setNotes,
     setBankPublicKey,
-    refreshNotes,
   };
 };
+
+const OFFLINE_FEATURES = [
+  { title: 'Balance', description: 'Keep funds ready for offline payments at any time.' },
+  { title: 'Risk Rules', description: 'Hop limits, expiry, and caps enforced on-device.' },
+  { title: 'Transaction Log', description: 'Track every offline payment with provenance data.' },
+  { title: 'Authentication Data', description: 'Wallet identity and attestation bound to your device.' },
+  { title: 'Anti-Replay Counters', description: 'Transfer-chain signatures prevent replay attacks.' },
+  { title: 'Cryptographic Keys', description: 'Secure keys stored locally to sign each hop.' },
+];
 
 const App: React.FC = () => {
   const { initializing, publicKey, privateKey, bankPublicKey, notes, setNotes, setBankPublicKey } = useWallet();
@@ -69,6 +78,24 @@ const App: React.FC = () => {
   const [recipient, setRecipient] = useState('');
   const [importedNote, setImportedNote] = useState('');
   const [lastExportedNote, setLastExportedNote] = useState<string | null>(null);
+  const {
+    available: bluetoothAvailable,
+    status: bluetoothStatus,
+    peers,
+    scanning,
+    connectedPeer,
+    peripheralEnabled,
+    supportsPeripheral,
+    incomingPayload,
+    startScan,
+    stopScan,
+    connect,
+    disconnect,
+    enablePeripheral,
+    disablePeripheral,
+    send,
+    clearIncoming,
+  } = useBluetoothTransfer();
 
   const balance = useMemo(() => {
     if (!publicKey) {
@@ -78,6 +105,43 @@ const App: React.FC = () => {
       .filter((note) => getNoteOwner(note) === publicKey)
       .reduce((total, note) => total + note.value, 0);
   }, [notes, publicKey]);
+
+  useEffect(() => {
+    if (!incomingPayload) {
+      return;
+    }
+
+    if (!publicKey || !bankPublicKey) {
+      Alert.alert('Wallet not ready', 'Register the wallet before receiving notes.');
+      clearIncoming();
+      return;
+    }
+
+    try {
+      const parsed: DigitalNote = JSON.parse(incomingPayload);
+      if (notes.some((existing) => existing.noteId === parsed.noteId)) {
+        Alert.alert('Duplicate note', 'This note already exists in your wallet.');
+        clearIncoming();
+        return;
+      }
+
+      const validation = transferEngine.validateIncomingNote(parsed, bankPublicKey, publicKey, balance);
+      if (!validation.ok) {
+        Alert.alert('Bluetooth note rejected', validation.reason ?? 'Unknown reason');
+        clearIncoming();
+        return;
+      }
+
+      const updatedNotes = [...notes, parsed];
+      setNotes(updatedNotes);
+      updateNotes(updatedNotes).catch((error) => console.warn('Failed to persist notes', error));
+      Alert.alert('Note received', `Stored note ${parsed.noteId}`);
+    } catch (error: any) {
+      Alert.alert('Failed to read note', error.message);
+    } finally {
+      clearIncoming();
+    }
+  }, [incomingPayload, publicKey, bankPublicKey, notes, balance, clearIncoming, setNotes]);
 
   const handleRegister = async () => {
     if (!publicKey) {
@@ -113,7 +177,7 @@ const App: React.FC = () => {
     }
   };
 
-  const handleExportTransfer = () => {
+  const handleExportTransfer = async () => {
     if (!publicKey || !privateKey) {
       Alert.alert('Missing keys', 'Generate or restore your keypair first.');
       return;
@@ -144,13 +208,30 @@ const App: React.FC = () => {
       return;
     }
 
+    const payload = JSON.stringify(updatedNote, null, 2);
+    if (connectedPeer) {
+      try {
+        await send(payload);
+        const remainingNotes = notes.filter((candidate) => candidate.noteId !== note.noteId);
+        setNotes(remainingNotes);
+        updateNotes(remainingNotes).catch((error) => console.warn('Failed to persist notes', error));
+        Alert.alert('Transfer sent', `Note ${note.noteId} delivered over Bluetooth.`);
+        return;
+      } catch (error: any) {
+        Alert.alert('Bluetooth transfer failed', error.message ?? 'Unknown error');
+        return;
+      }
+    }
+
     const remainingNotes = notes.filter((candidate) => candidate.noteId !== note.noteId);
     setNotes(remainingNotes);
     updateNotes(remainingNotes).catch((error) => console.warn('Failed to persist notes', error));
 
-    const payload = JSON.stringify(updatedNote, null, 2);
     setLastExportedNote(payload);
-    Alert.alert('Transfer prepared', 'Share the exported note payload with the recipient offline.');
+    Alert.alert(
+      'Transfer prepared',
+      'Share the exported note payload manually or connect to a wallet over Bluetooth to deliver it automatically.',
+    );
   };
 
   const handleImportNote = () => {
@@ -189,222 +270,459 @@ const App: React.FC = () => {
 
     try {
       const result = await syncNotes(publicKey, notes);
-      setNotes((current) => current.filter((note) => result.results.every((r) => r.noteId !== note.noteId || r.status !== 'redeemed')));
+      setNotes((current) =>
+        current.filter((note) => result.results.every((r) => r.noteId !== note.noteId || r.status !== 'redeemed')),
+      );
       Alert.alert('Sync complete', `Redeemed: ${result.results.filter((r) => r.status === 'redeemed').length}`);
     } catch (error: any) {
       Alert.alert('Sync failed', error.message);
     }
   };
 
-  const renderNote = ({ item }: { item: DigitalNote }) => {
-    const isOwned = publicKey ? getNoteOwner(item) === publicKey : false;
+  if (initializing) {
     return (
-      <View style={[styles.noteCard, !isOwned && styles.noteNotOwned]}>
-        <Text style={styles.noteTitle}>Note {item.noteId.slice(0, 8)}...</Text>
-        <Text>Value: {item.value}</Text>
-        <Text>Expires: {new Date(item.expiry).toLocaleString()}</Text>
-        <Text>Hops: {item.transferChain.length}</Text>
-        <Text>Status: {isOwned ? 'Owned' : 'Transferred'}</Text>
+      <SafeAreaProvider>
+        <SafeAreaView style={styles.centered}>
+          <StatusBar style="light" />
+          <Text style={styles.loadingText}>Loading wallet…</Text>
+        </SafeAreaView>
+      </SafeAreaProvider>
+    );
+  }
+
+  const renderNoteCard = (note: DigitalNote) => {
+    const isOwned = publicKey ? getNoteOwner(note) === publicKey : false;
+    return (
+      <View key={note.noteId} style={styles.noteCard}>
+        <View style={styles.noteCardHeader}>
+          <Text style={styles.noteValue}>{note.value}</Text>
+          <Text style={[styles.noteBadge, isOwned ? styles.noteBadgeOwned : styles.noteBadgeReceived]}>
+            {isOwned ? 'Owned' : 'Received'}
+          </Text>
+        </View>
+        <Text style={styles.noteIdLabel}>Note ID</Text>
+        <Text selectable style={styles.noteId}>
+          {note.noteId}
+        </Text>
+        <Text style={styles.noteMeta}>Expires: {new Date(note.expiry).toLocaleString()}</Text>
+        <Text style={styles.noteMeta}>Hops: {note.transferChain.length}</Text>
       </View>
     );
   };
 
-  if (initializing) {
-    return (
-      <SafeAreaView style={styles.container}>
-        <Text style={styles.heading}>Initializing wallet...</Text>
-      </SafeAreaView>
-    );
-  }
-
   return (
-    <SafeAreaView style={styles.container}>
-      <StatusBar style="dark" />
-      <ScrollView contentContainerStyle={styles.scrollContent}>
-        <Text style={styles.heading}>Offline DPC Wallet</Text>
-        <Text style={styles.label}>Public key:</Text>
-        <Text selectable style={styles.mono}>
-          {publicKey ?? 'Not generated'}
-        </Text>
-        <Text style={styles.label}>Bank public key:</Text>
-        <Text selectable style={styles.mono}>
-          {bankPublicKey ?? 'Fetch after registering'}
-        </Text>
-
-        <TouchableOpacity style={styles.primaryButton} onPress={handleRegister}>
-          <Text style={styles.primaryButtonText}>Register Wallet</Text>
-        </TouchableOpacity>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Balance</Text>
-          <Text style={styles.balance}>Total: {balance}</Text>
-          <Text style={styles.helper}>Offline limit: {MAX_OFFLINE_BALANCE}</Text>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Withdraw Note</Text>
-          <TextInput
-            style={styles.input}
-            value={amount}
-            onChangeText={setAmount}
-            placeholder="Amount"
-            keyboardType="numeric"
-          />
-          <TouchableOpacity style={styles.primaryButton} onPress={handleWithdraw}>
-            <Text style={styles.primaryButtonText}>Withdraw</Text>
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Prepare Transfer</Text>
-          <TextInput
-            style={styles.input}
-            value={recipient}
-            onChangeText={setRecipient}
-            placeholder="Recipient public key"
-          />
-          <TouchableOpacity style={styles.primaryButton} onPress={handleExportTransfer}>
-            <Text style={styles.primaryButtonText}>Generate Transfer Payload</Text>
-          </TouchableOpacity>
-          {lastExportedNote ? (
-            <View style={styles.exportContainer}>
-              <Text style={styles.label}>Exported payload (share offline):</Text>
-              <Text selectable style={styles.exportPayload}>
-                {lastExportedNote}
-              </Text>
+    <SafeAreaProvider>
+      <SafeAreaView style={styles.safeArea}>
+        <StatusBar style="light" />
+        <ScrollView contentContainerStyle={styles.scrollContent}>
+          <View style={styles.heroCard}>
+            <Text style={styles.heroTitle}>Offline Assets</Text>
+            <Text style={styles.heroSubtitle}>Balance available offline: {balance}</Text>
+            <View style={styles.featureGrid}>
+              {OFFLINE_FEATURES.map((feature) => (
+                <View key={feature.title} style={styles.featureCard}>
+                  <Text style={styles.featureTitle}>{feature.title}</Text>
+                  <Text style={styles.featureBody}>{feature.description}</Text>
+                </View>
+              ))}
             </View>
-          ) : null}
-        </View>
+          </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Import Received Note</Text>
-          <TextInput
-            style={[styles.input, styles.multiLine]}
-            value={importedNote}
-            onChangeText={setImportedNote}
-            placeholder="Paste note payload JSON"
-            multiline
-            numberOfLines={6}
-          />
-          <TouchableOpacity style={styles.primaryButton} onPress={handleImportNote}>
-            <Text style={styles.primaryButtonText}>Store Note</Text>
-          </TouchableOpacity>
-        </View>
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Wallet Identity</Text>
+            <Text style={styles.cardSubtitle}>Share your public key when pairing with the bank or peers.</Text>
+            <Text selectable style={styles.mono}>
+              {publicKey ?? 'Not generated'}
+            </Text>
+            <TouchableOpacity style={styles.primaryButton} onPress={handleRegister}>
+              <Text style={styles.primaryButtonText}>Register Wallet</Text>
+            </TouchableOpacity>
+          </View>
 
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Local Notes</Text>
-          {notes.length === 0 ? (
-            <Text style={styles.helper}>No notes stored locally.</Text>
-          ) : (
-            <FlatList
-              data={notes}
-              keyExtractor={(item) => item.noteId}
-              renderItem={renderNote}
-              scrollEnabled={false}
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Offline Withdrawal</Text>
+            <Text style={styles.cardSubtitle}>Request new digital notes from the bank simulator.</Text>
+            <TextInput
+              style={styles.input}
+              value={amount}
+              onChangeText={setAmount}
+              keyboardType="numeric"
+              placeholder="Amount"
+              placeholderTextColor="#8aa0b4"
             />
-          )}
-        </View>
+            <TouchableOpacity style={styles.primaryButton} onPress={handleWithdraw}>
+              <Text style={styles.primaryButtonText}>Withdraw</Text>
+            </TouchableOpacity>
+          </View>
 
-        <TouchableOpacity style={styles.primaryButton} onPress={handleSync}>
-          <Text style={styles.primaryButtonText}>Sync with Bank</Text>
-        </TouchableOpacity>
-      </ScrollView>
-    </SafeAreaView>
+          <View style={styles.card}>
+            <View style={styles.cardHeaderRow}>
+              <Text style={styles.cardTitle}>Bluetooth Transfers</Text>
+              <Text style={styles.statusText}>{bluetoothStatus}</Text>
+            </View>
+            {bluetoothAvailable ? (
+              <>
+                <View style={styles.buttonRow}>
+                  <TouchableOpacity
+                    style={[styles.secondaryButton, scanning && styles.secondaryButtonActive]}
+                    onPress={scanning ? stopScan : startScan}
+                  >
+                    <Text style={styles.secondaryButtonText}>{scanning ? 'Stop Scan' : 'Scan for Wallets'}</Text>
+                  </TouchableOpacity>
+                  {connectedPeer ? (
+                    <TouchableOpacity style={styles.secondaryButton} onPress={disconnect}>
+                      <Text style={styles.secondaryButtonText}>Disconnect</Text>
+                    </TouchableOpacity>
+                  ) : (
+                    <TouchableOpacity
+                      style={[styles.secondaryButton, peripheralEnabled && styles.secondaryButtonActive]}
+                      onPress={peripheralEnabled ? disablePeripheral : enablePeripheral}
+                      disabled={!supportsPeripheral}
+                    >
+                      <Text style={styles.secondaryButtonText}>
+                        {peripheralEnabled ? 'Stop Hosting' : supportsPeripheral ? 'Host Receivable' : 'Needs custom build'}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+                {connectedPeer ? (
+                  <View style={styles.connectedPeer}>
+                    <Text style={styles.connectedPeerTitle}>Connected Wallet</Text>
+                    <Text style={styles.connectedPeerBody}>{connectedPeer.name}</Text>
+                    <Text style={styles.connectedPeerBody}>Signal: {connectedPeer.rssi ?? 'n/a'} dBm</Text>
+                  </View>
+                ) : (
+                  <View style={styles.peerList}>
+                    {peers.length === 0 ? (
+                      <Text style={styles.peerPlaceholder}>Start scanning to discover wallets advertising DPC transfers.</Text>
+                    ) : (
+                      peers.map((peer) => (
+                        <TouchableOpacity key={peer.id} style={styles.peerCard} onPress={() => connect(peer.id)}>
+                          <Text style={styles.peerName}>{peer.name}</Text>
+                          <Text style={styles.peerMeta}>{peer.id}</Text>
+                          <Text style={styles.peerMeta}>Signal: {peer.rssi ?? 'n/a'} dBm</Text>
+                        </TouchableOpacity>
+                      ))
+                    )}
+                  </View>
+                )}
+              </>
+            ) : (
+              <Text style={styles.peerPlaceholder}>
+                Bluetooth modules require a custom Expo dev build with BLE permissions. Manual payload sharing remains available.
+              </Text>
+            )}
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Transfer a Note</Text>
+            <Text style={styles.cardSubtitle}>Select a note, enter the recipient key, then send via Bluetooth or share manually.</Text>
+            <TextInput
+              style={styles.input}
+              value={recipient}
+              onChangeText={setRecipient}
+              placeholder="Recipient Public Key"
+              placeholderTextColor="#8aa0b4"
+            />
+            <TouchableOpacity style={styles.primaryButton} onPress={handleExportTransfer}>
+              <Text style={styles.primaryButtonText}>Send Note</Text>
+            </TouchableOpacity>
+            {lastExportedNote ? (
+              <View style={styles.exportContainer}>
+                <Text style={styles.exportTitle}>Last Prepared Payload</Text>
+                <Text selectable style={styles.exportPayload}>
+                  {lastExportedNote}
+                </Text>
+              </View>
+            ) : null}
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Import a Note</Text>
+            <Text style={styles.cardSubtitle}>Paste a payload received offline or via Bluetooth fallback.</Text>
+            <TextInput
+              style={[styles.input, styles.multiline]}
+              value={importedNote}
+              onChangeText={setImportedNote}
+              placeholder="Paste note payload"
+              placeholderTextColor="#8aa0b4"
+              multiline
+            />
+            <TouchableOpacity style={styles.primaryButton} onPress={handleImportNote}>
+              <Text style={styles.primaryButtonText}>Import</Text>
+            </TouchableOpacity>
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>My Notes</Text>
+            <Text style={styles.cardSubtitle}>Tap a note to inspect its lifecycle and transfer history.</Text>
+            {notes.length === 0 ? (
+              <Text style={styles.peerPlaceholder}>No notes available. Withdraw or receive a note to begin.</Text>
+            ) : (
+              <View style={styles.noteGrid}>{notes.map((note) => renderNoteCard(note))}</View>
+            )}
+          </View>
+
+          <View style={styles.card}>
+            <Text style={styles.cardTitle}>Synchronize with Bank</Text>
+            <Text style={styles.cardSubtitle}>Upload redeemed notes and refresh your offline balance record.</Text>
+            <TouchableOpacity style={styles.primaryButton} onPress={handleSync}>
+              <Text style={styles.primaryButtonText}>Sync Notes</Text>
+            </TouchableOpacity>
+          </View>
+        </ScrollView>
+      </SafeAreaView>
+    </SafeAreaProvider>
   );
 };
 
 const styles = StyleSheet.create({
-  container: {
+  safeArea: {
     flex: 1,
-    backgroundColor: '#f5f5f5',
+    backgroundColor: '#0f1c2b',
   },
   scrollContent: {
     padding: 16,
-    paddingBottom: 64,
+    paddingBottom: 32,
     gap: 16,
   },
-  heading: {
-    fontSize: 24,
-    fontWeight: '700',
-    marginBottom: 8,
-  },
-  label: {
-    fontWeight: '600',
-  },
-  mono: {
-    fontFamily: 'Courier New',
-    fontSize: 12,
-    backgroundColor: '#fff',
-    padding: 8,
-    borderRadius: 6,
-    marginTop: 4,
-  },
-  primaryButton: {
-    backgroundColor: '#1e5df8',
-    paddingVertical: 12,
-    borderRadius: 8,
+  centered: {
+    flex: 1,
     alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#0f1c2b',
   },
-  primaryButtonText: {
-    color: '#fff',
-    fontWeight: '600',
-  },
-  section: {
-    backgroundColor: '#fff',
-    padding: 16,
-    borderRadius: 12,
-    shadowColor: '#000',
-    shadowOpacity: 0.05,
-    shadowOffset: { width: 0, height: 2 },
-    shadowRadius: 4,
-    elevation: 1,
-    gap: 12,
-  },
-  sectionTitle: {
+  loadingText: {
+    color: '#f0f6ff',
     fontSize: 18,
     fontWeight: '600',
   },
-  balance: {
+  heroCard: {
+    backgroundColor: '#19324a',
+    borderRadius: 16,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOpacity: 0.2,
+    shadowOffset: { width: 0, height: 4 },
+    shadowRadius: 12,
+    elevation: 4,
+    gap: 12,
+  },
+  heroTitle: {
+    color: '#f7b733',
+    fontSize: 24,
+    fontWeight: '700',
+  },
+  heroSubtitle: {
+    color: '#f0f6ff',
+    fontSize: 16,
+  },
+  featureGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
+  },
+  featureCard: {
+    backgroundColor: '#244762',
+    borderRadius: 12,
+    padding: 12,
+    width: '48%',
+  },
+  featureTitle: {
+    color: '#f0f6ff',
+    fontSize: 14,
+    fontWeight: '700',
+    marginBottom: 4,
+  },
+  featureBody: {
+    color: '#c6d4e1',
+    fontSize: 13,
+  },
+  card: {
+    backgroundColor: '#14283a',
+    borderRadius: 16,
+    padding: 20,
+    gap: 12,
+    shadowColor: '#000',
+    shadowOpacity: 0.1,
+    shadowOffset: { width: 0, height: 2 },
+    shadowRadius: 8,
+    elevation: 2,
+  },
+  cardTitle: {
+    color: '#f0f6ff',
+    fontSize: 18,
+    fontWeight: '700',
+  },
+  cardSubtitle: {
+    color: '#8aa0b4',
+    fontSize: 14,
+  },
+  mono: {
+    color: '#f0f6ff',
+    fontFamily: 'Courier',
+    fontSize: 12,
+    backgroundColor: '#0f1c2b',
+    padding: 12,
+    borderRadius: 12,
+  },
+  primaryButton: {
+    backgroundColor: '#f7b733',
+    borderRadius: 12,
+    paddingVertical: 12,
+    alignItems: 'center',
+  },
+  primaryButtonText: {
+    color: '#0f1c2b',
+    fontWeight: '700',
+    fontSize: 16,
+  },
+  cardHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  statusText: {
+    color: '#8aa0b4',
+    fontSize: 12,
+    textAlign: 'right',
+  },
+  buttonRow: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  secondaryButton: {
+    flex: 1,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: '#2f4f69',
+    paddingVertical: 12,
+    alignItems: 'center',
+    backgroundColor: '#0f1c2b',
+  },
+  secondaryButtonActive: {
+    borderColor: '#f7b733',
+  },
+  secondaryButtonText: {
+    color: '#f0f6ff',
+    fontSize: 14,
+    fontWeight: '600',
+  },
+  connectedPeer: {
+    backgroundColor: '#0f1c2b',
+    borderRadius: 12,
+    padding: 16,
+    gap: 4,
+  },
+  connectedPeerTitle: {
+    color: '#f7b733',
     fontSize: 16,
     fontWeight: '700',
   },
-  helper: {
-    color: '#666',
+  connectedPeerBody: {
+    color: '#c6d4e1',
+    fontSize: 14,
+  },
+  peerList: {
+    gap: 12,
+  },
+  peerPlaceholder: {
+    color: '#8aa0b4',
+    fontSize: 14,
+  },
+  peerCard: {
+    backgroundColor: '#0f1c2b',
+    borderRadius: 12,
+    padding: 14,
+    gap: 4,
+  },
+  peerName: {
+    color: '#f0f6ff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  peerMeta: {
+    color: '#8aa0b4',
     fontSize: 12,
   },
   input: {
-    backgroundColor: '#f0f0f0',
-    borderRadius: 8,
+    backgroundColor: '#0f1c2b',
+    borderRadius: 12,
     padding: 12,
+    color: '#f0f6ff',
+    borderWidth: 1,
+    borderColor: '#2f4f69',
   },
-  multiLine: {
+  multiline: {
     minHeight: 120,
     textAlignVertical: 'top',
   },
   exportContainer: {
-    backgroundColor: '#0f172a',
+    backgroundColor: '#0f1c2b',
+    borderRadius: 12,
     padding: 12,
-    borderRadius: 8,
+    gap: 8,
+  },
+  exportTitle: {
+    color: '#f7b733',
+    fontWeight: '600',
+    fontSize: 14,
   },
   exportPayload: {
-    color: '#e0f2fe',
-    fontFamily: 'Courier New',
-    fontSize: 11,
+    color: '#c6d4e1',
+    fontSize: 12,
+    fontFamily: 'Courier',
+  },
+  noteGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 12,
   },
   noteCard: {
-    backgroundColor: '#f8fafc',
-    borderRadius: 8,
-    padding: 12,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: '#dbeafe',
+    width: '48%',
+    backgroundColor: '#0f1c2b',
+    borderRadius: 16,
+    padding: 14,
+    gap: 8,
   },
-  noteNotOwned: {
-    opacity: 0.6,
+  noteCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
   },
-  noteTitle: {
+  noteValue: {
+    color: '#f0f6ff',
+    fontSize: 22,
     fontWeight: '700',
-    marginBottom: 4,
+  },
+  noteBadge: {
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    fontSize: 12,
+    fontWeight: '600',
+    overflow: 'hidden',
+  },
+  noteBadgeOwned: {
+    backgroundColor: '#1d8348',
+    color: '#f0f6ff',
+  },
+  noteBadgeReceived: {
+    backgroundColor: '#b03a2e',
+    color: '#f0f6ff',
+  },
+  noteIdLabel: {
+    color: '#8aa0b4',
+    fontSize: 12,
+  },
+  noteId: {
+    color: '#c6d4e1',
+    fontSize: 12,
+    fontFamily: 'Courier',
+  },
+  noteMeta: {
+    color: '#8aa0b4',
+    fontSize: 12,
   },
 });
 

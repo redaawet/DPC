@@ -18,7 +18,7 @@ The mobile application provides the user interface and offline wallet functional
 
 - Keypair generation.
 - Note storage and management.
-- Preparation of peer-to-peer transfer payloads for offline exchange (designed for Bluetooth, currently simulated).
+- Bluetooth-based peer-to-peer discovery and payload exchange for offline transfers (enabled in custom native builds).
 - Local enforcement of risk rules.
 - Synchronization with the bank server.
 
@@ -26,6 +26,8 @@ The app uses:
 
 - React Native (Expo) for cross-platform UI.
 - AsyncStorage and SecureStore for secure local storage.
+- `react-native-safe-area-context` for notch-aware layouts.
+- `react-native-ble-plx` and `react-native-ble-peripheral` for Bluetooth scanning and peripheral broadcasting in custom builds.
 - Crypto utilities built with `tweetnacl` and a lightweight offline transfer engine.
 
 Although simplified, it captures the essential behavior of an offline CBDC wallet and enables secure transfer of digital notes without continuous internet connectivity.
@@ -41,6 +43,12 @@ A lightweight Node.js server acts as the “central bank.” Its functions are t
 This backend is a simplified simulation of a central ledger, mimicking the issuance and redemption model used in eNaira. It is strictly a research-level implementation intended to validate the feasibility of the proposed approach rather than represent a production-ready CBDC system.
 
 ### 4.2.3 Offline Transfer Engine
+The offline transfer engine, implemented within the mobile app, now combines a transport layer with the existing cryptographic pipeline:
+
+- The **BluetoothTransferManager** wraps `react-native-ble-plx` for central scanning/connecting and `react-native-ble-peripheral` for advertising a writable characteristic in custom Android builds. It powers device discovery, session establishment, and live payload delivery when both peers run a native build configured with the BLE plugins.
+- The **OfflineTransferEngine** continues to enforce the note risk rules, signing outbound hops and validating inbound chains before storage.
+
+Transfers are recorded as cryptographic signatures on a note's transfer chain, enforcing a transitive transfer model similar to BitChat. Each hop is validated against the immutable `issuedTo` origin recorded in the note payload, so tampering with intermediate owners causes verification to fail. When running inside Expo Go (where native BLE modules are unavailable) the wallet automatically falls back to preparing JSON payloads that can be exchanged out-of-band—for example via QR codes, secure messaging, or copy/paste—while maintaining the same validation path once the payload is imported.
 The offline transfer engine, implemented within the mobile app, manages:
 
 - Device discovery via BLE and encrypted session establishment (available in custom native builds).
@@ -133,14 +141,16 @@ When internet connectivity is available:
 This final step mimics reconciliation in real CBDC systems.
 
 ## 4.5 Prototype User Interface
-The user interface includes four main screens:
+The mobile wallet now presents a richer, mobile-first interface that mirrors the "Offline Assets" figure in the brief. A hero section highlights the offline balance while visually enumerating the six asset pillars (balance, risk rules, transaction log, authentication data, anti-replay counters, and cryptographic keys). Below the hero the experience is organised into cards:
 
-1. Home / Balance View.
-2. My Notes (list of unspent notes).
-3. Transfer via Bluetooth or QR.
-4. Sync with Bank.
+1. **Wallet Identity** – shows the public key and provides one-tap registration with the simulator.
+2. **Offline Withdrawal** – issues fresh notes from the bank.
+3. **Bluetooth Transfers** – scans for nearby wallets, hosts a receivable characteristic in custom builds, and displays connection status.
+4. **Transfer / Import** – prepares outbound payloads, delivers them over Bluetooth when connected, or exposes the JSON for manual sharing.
+5. **My Notes** – renders each note as a tile with denomination, hop count, and expiry metadata.
+6. **Synchronise with Bank** – reconciles offline activity with the simulator.
 
-Screens are intentionally kept simple for clarity during demonstrations.
+All cards adopt a consistent palette, rounded corners, and typography tuned for handheld devices, improving the clarity of demonstrations while retaining the research prototype scope.
 
 ## 4.6 Testing and Evaluation
 Testing evaluates the core research questions.
@@ -215,7 +225,27 @@ npm install
 npx expo start
 ```
 
-Use the Expo client (Android/iOS simulator or physical device) to load the project. The app targets **Expo SDK 54**, so be sure to open it with an Expo Go release that matches SDK 54 (or build a local development client) to avoid compatibility errors. When running inside Expo Go the Bluetooth native modules are unavailable, so offline transfers are demonstrated by copying the exported JSON payload between devices. Building a custom development client with BLE support (for example by adding `react-native-ble-plx`) restores the Bluetooth discovery flow. The wallet expects the bank simulator to be reachable at `http://localhost:4000`; update `mobile/src/core/constants.ts` if you run the bank on a different host.
+Use the Expo client (Android/iOS simulator or physical device) to load the project. The app targets **Expo SDK 54**, so open it with a matching Expo Go release to avoid compatibility errors. Expo Go does not bundle the BLE native modules; in that environment the wallet still prepares transfer payloads, but you must share them manually (QR, messaging, clipboard, etc.).
+
+To exercise true Bluetooth delivery you must build a custom development client:
+
+1. Install the native modules: `npx expo install react-native-ble-plx react-native-ble-peripheral react-native-safe-area-context`.
+2. Add the BLE config plugin to `app.json`:
+
+   ```json
+   {
+     "expo": {
+       "plugins": [
+         ["react-native-ble-plx", { "modes": ["central", "peripheral"], "isBackgroundEnabled": false }]
+       ]
+     }
+   }
+   ```
+
+   (Add any additional configuration required by `react-native-ble-peripheral` for your target platform.)
+3. Run `npx expo prebuild` followed by `npx expo run:android` (peripheral mode is currently supported on Android) or `npx expo run:ios` if you add equivalent iOS support.
+
+Once both peers install the custom build, the Bluetooth Transfers card in the app discovers nearby wallets, lets one device host a receivable characteristic, and allows the sender to deliver the signed note payload over BLE. The wallet expects the bank simulator to be reachable at `http://localhost:4000`; update `mobile/src/core/constants.ts` if you run the bank on a different host.
 
 ### Creating a Downloadable Archive
 

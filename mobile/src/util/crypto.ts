@@ -4,9 +4,9 @@ import nacl from 'tweetnacl';
 
 import type { DigitalNote, PublicKey, TransferEntry } from '../core/types';
 
-const PRIVATE_KEY_KEY = 'dpc:wallet:privateKey';
-const PUBLIC_KEY_KEY = 'dpc:wallet:publicKey';
-const BANK_KEY_KEY = 'dpc:wallet:bankPublicKey';
+const PRIVATE_KEY_KEY = 'dpc_wallet_privateKey';
+const PUBLIC_KEY_KEY = 'dpc_wallet_publicKey';
+const BANK_KEY_KEY = 'dpc_wallet_bankPublicKey';
 
 export const saveKeyPair = async (publicKey: PublicKey, privateKey: Uint8Array) => {
   await SecureStore.setItemAsync(PUBLIC_KEY_KEY, publicKey);

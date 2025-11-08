@@ -2,7 +2,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 
 import type { DigitalNote } from '../core/types';
 
-const NOTES_KEY = 'dpc:wallet:notes';
+const NOTES_KEY = 'dpc_wallet_notes';
 
 export const loadNotes = async (): Promise<DigitalNote[]> => {
   const raw = await AsyncStorage.getItem(NOTES_KEY);
