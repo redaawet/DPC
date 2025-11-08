@@ -1,11 +1,22 @@
-import cors from 'cors';
 import express from 'express';
 import nacl from 'tweetnacl';
 import { v4 as uuidv4 } from 'uuid';
 
 const app = express();
-app.use(cors());
 app.use(express.json({ limit: '1mb' }));
+
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(204);
+    return;
+  }
+
+  next();
+});
 
 const BANK_KEY_PAIR = nacl.sign.keyPair();
 const BANK_PUBLIC_KEY = Buffer.from(BANK_KEY_PAIR.publicKey).toString('base64');
