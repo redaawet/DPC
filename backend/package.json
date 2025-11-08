@@ -1,0 +1,17 @@
+{
+  "name": "dpc-bank-simulator",
+  "version": "1.0.0",
+  "description": "Research-grade backend simulator for the Offline Digital Pocket Cash prototype.",
+  "main": "server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "tweetnacl": "^1.0.3",
+    "uuid": "^9.0.1"
+  }
+}
+
