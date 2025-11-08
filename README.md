@@ -49,7 +49,7 @@ The offline transfer engine, implemented within the mobile app, manages:
 - Transfer-chain signature validation.
 - Hop-limit and expiry verification.
 
-Transfers are recorded as cryptographic signatures on a note's transfer chain, enforcing a transitive transfer model similar to BitChat.
+Transfers are recorded as cryptographic signatures on a note's transfer chain, enforcing a transitive transfer model similar to BitChat. Each hop is validated against the immutable `issuedTo` origin recorded in the note payload, so tampering with intermediate owners causes verification to fail.
 
 ## 4.3 Digital Note Structure
 Each note is represented as a JSON payload:
@@ -61,6 +61,7 @@ Each note is represented as a JSON payload:
   "issuerSignature": "signature_by_bank",
   "createdAt": "timestamp",
   "expiry": "createdAt + 7 days",
+  "issuedTo": "base64_public_key_of_initial_owner",
   "transferChain": [
     { "from": "...", "to": "...", "signature": "sig_by_sender" }
   ]
@@ -73,7 +74,7 @@ Each note is represented as a JSON payload:
 - **Hop-limit:** each note may be transferred a maximum of three times offline.
 - **Expiry time:** each note expires seven days after issuance.
 
-All risk controls are enforced locally by the mobile wallet to meet central bank recommendations for offline CBDC systems.
+The mobile wallet now stores the initial owner (`issuedTo`) alongside each note, allowing peers to validate that every hop in the transfer chain links consecutively from the first recipient to the current holder. All risk controls are enforced locally by the mobile wallet to meet central bank recommendations for offline CBDC systems.
 
 ## 4.4 Implementation Steps
 
@@ -113,6 +114,7 @@ Bluetooth is used to discover nearby wallets. The transfer flow is:
 5. Receiver verifies:
    - Bank signature.
    - Transfer-chain signatures.
+   - That each hop links consecutively from the original `issuedTo` wallet to the current recipient.
    - Hop limit.
    - Expiry.
    - Balance limit.
@@ -158,6 +160,7 @@ Testing evaluates the core research questions.
 - Attempt signature tampering.
 - Attempt replaying a previous transfer.
 - Attempt to modify hop count.
+- Attempt to alter the `issuedTo` field or reorder transfer-chain hops.
 - Attempt to restore an old wallet state (rollback test).
 
 ### 4.6.3 Usability Testing

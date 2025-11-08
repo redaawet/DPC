@@ -75,7 +75,7 @@ const App: React.FC = () => {
       return 0;
     }
     return notes
-      .filter((note) => getNoteOwner(note, publicKey) === publicKey)
+      .filter((note) => getNoteOwner(note) === publicKey)
       .reduce((total, note) => total + note.value, 0);
   }, [notes, publicKey]);
 
@@ -119,7 +119,7 @@ const App: React.FC = () => {
       return;
     }
 
-    const ownedNotes = notes.filter((note) => getNoteOwner(note, publicKey) === publicKey);
+    const ownedNotes = notes.filter((note) => getNoteOwner(note) === publicKey);
     const note = ownedNotes[0];
     if (!note) {
       Alert.alert('No notes available', 'Withdraw or receive a note before transferring.');
@@ -161,6 +161,11 @@ const App: React.FC = () => {
 
     try {
       const parsed: DigitalNote = JSON.parse(importedNote);
+      if (notes.some((existing) => existing.noteId === parsed.noteId)) {
+        Alert.alert('Duplicate note', 'This note already exists in your wallet.');
+        return;
+      }
+
       const validation = transferEngine.validateIncomingNote(parsed, bankPublicKey, publicKey, balance);
       if (!validation.ok) {
         Alert.alert('Note rejected', validation.reason ?? 'Unknown reason');
@@ -192,7 +197,7 @@ const App: React.FC = () => {
   };
 
   const renderNote = ({ item }: { item: DigitalNote }) => {
-    const isOwned = publicKey ? getNoteOwner(item, publicKey) === publicKey : false;
+    const isOwned = publicKey ? getNoteOwner(item) === publicKey : false;
     return (
       <View style={[styles.noteCard, !isOwned && styles.noteNotOwned]}>
         <Text style={styles.noteTitle}>Note {item.noteId.slice(0, 8)}...</Text>

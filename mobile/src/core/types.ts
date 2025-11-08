@@ -13,6 +13,7 @@ export interface DigitalNote {
   issuerSignature: string;
   createdAt: string;
   expiry: string;
+  issuedTo: PublicKey;
   transferChain: TransferEntry[];
 }
 

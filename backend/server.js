@@ -1,11 +1,22 @@
-import cors from 'cors';
 import express from 'express';
 import nacl from 'tweetnacl';
 import { v4 as uuidv4 } from 'uuid';
 
 const app = express();
-app.use(cors());
 app.use(express.json({ limit: '1mb' }));
+
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+
+  if (req.method === 'OPTIONS') {
+    res.sendStatus(204);
+    return;
+  }
+
+  next();
+});
 
 const BANK_KEY_PAIR = nacl.sign.keyPair();
 const BANK_PUBLIC_KEY = Buffer.from(BANK_KEY_PAIR.publicKey).toString('base64');
@@ -24,6 +35,7 @@ const serializeNoteForSigning = (note) => {
     value: note.value,
     createdAt: note.createdAt,
     expiry: note.expiry,
+    issuedTo: note.issuedTo,
   };
   return Buffer.from(JSON.stringify(transferable));
 };
@@ -34,7 +46,7 @@ const verifyBankSignature = (note) => {
   return nacl.sign.detached.verify(message, signature, BANK_KEY_PAIR.publicKey);
 };
 
-const verifyTransferChain = (note) => {
+const verifyTransferChain = (note, depositorPublicKey) => {
   if (!Array.isArray(note.transferChain)) {
     return { ok: false, reason: 'transferChain must be an array' };
   }
@@ -42,6 +54,17 @@ const verifyTransferChain = (note) => {
   if (note.transferChain.length > MAX_HOPS) {
     return { ok: false, reason: `hop limit exceeded (${note.transferChain.length}/${MAX_HOPS})` };
   }
+
+  const issuanceRecord = issuedNotes.get(note.noteId);
+  if (!issuanceRecord) {
+    return { ok: false, reason: 'note was not issued by this bank' };
+  }
+
+  if (issuanceRecord.issuedTo !== note.issuedTo) {
+    return { ok: false, reason: 'issuedTo does not match issuance record' };
+  }
+
+  let previousOwner = note.issuedTo;
 
   for (let index = 0; index < note.transferChain.length; index += 1) {
     const entry = note.transferChain[index];
@@ -54,6 +77,10 @@ const verifyTransferChain = (note) => {
       return { ok: false, reason: `transfer entry ${index} references unregistered wallet` };
     }
 
+    if (from !== previousOwner) {
+      return { ok: false, reason: `transfer entry ${index} does not chain from previous owner` };
+    }
+
     const transferMessage = Buffer.from(`Transfer:${note.noteId}:${to}`);
     const entrySignature = Buffer.from(signature, 'base64');
     const fromKey = Buffer.from(from, 'base64');
@@ -61,6 +88,12 @@ const verifyTransferChain = (note) => {
     if (!nacl.sign.detached.verify(transferMessage, entrySignature, fromKey)) {
       return { ok: false, reason: `signature validation failed for transfer entry ${index}` };
     }
+
+    previousOwner = to;
+  }
+
+  if (previousOwner !== depositorPublicKey) {
+    return { ok: false, reason: 'note is not owned by depositing wallet' };
   }
 
   return { ok: true };
@@ -100,7 +133,7 @@ const redeemNotes = ({ publicKey, notes }) => {
       return { noteId: submittedNote.noteId, status: 'rejected', reason: 'invalid bank signature' };
     }
 
-    const transferCheck = verifyTransferChain(submittedNote);
+    const transferCheck = verifyTransferChain(submittedNote, publicKey);
     if (!transferCheck.ok) {
       return { noteId: submittedNote.noteId, status: 'rejected', reason: transferCheck.reason };
     }
@@ -177,6 +210,7 @@ app.post('/withdraw', (req, res) => {
     createdAt: new Date().toISOString(),
     expiry: new Date(Date.now() + NOTE_LIFETIME_MS).toISOString(),
     issuerSignature: '',
+    issuedTo: publicKey,
     transferChain: [],
     owner: publicKey,
   };
@@ -193,6 +227,7 @@ app.post('/withdraw', (req, res) => {
       createdAt: note.createdAt,
       expiry: note.expiry,
       issuerSignature: note.issuerSignature,
+      issuedTo: note.issuedTo,
       transferChain: note.transferChain,
     },
     bankPublicKey: BANK_PUBLIC_KEY,

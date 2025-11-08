@@ -63,6 +63,7 @@ export const verifyBankSignature = (note: DigitalNote, bankPublicKey: PublicKey)
     value: note.value,
     createdAt: note.createdAt,
     expiry: note.expiry,
+    issuedTo: note.issuedTo,
   };
 
   const message = Buffer.from(JSON.stringify(transferable));
@@ -73,18 +74,31 @@ export const verifyBankSignature = (note: DigitalNote, bankPublicKey: PublicKey)
 };
 
 export const verifyTransferChain = (note: DigitalNote): boolean => {
+  let previousOwner: PublicKey = note.issuedTo;
+
   return note.transferChain.every((entry) => {
     const { from, to, signature } = entry;
+    if (from !== previousOwner) {
+      return false;
+    }
+
     const fromKey = Buffer.from(from, 'base64');
     const message = Buffer.from(`Transfer:${note.noteId}:${to}`);
     const signatureBytes = Buffer.from(signature, 'base64');
-    return nacl.sign.detached.verify(message, signatureBytes, fromKey);
+
+    const signatureValid = nacl.sign.detached.verify(message, signatureBytes, fromKey);
+    if (!signatureValid) {
+      return false;
+    }
+
+    previousOwner = to;
+    return true;
   });
 };
 
-export const getNoteOwner = (note: DigitalNote, fallback: PublicKey): PublicKey => {
+export const getNoteOwner = (note: DigitalNote): PublicKey => {
   if (!note.transferChain.length) {
-    return fallback;
+    return note.issuedTo;
   }
 
   return note.transferChain[note.transferChain.length - 1].to;

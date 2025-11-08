@@ -1,3 +1,5 @@
+import { Buffer } from 'buffer';
+
 import { BANK_BASE_URL, MAX_OFFLINE_BALANCE } from '../core/constants';
 import type { DigitalNote, SyncResult, WalletState } from '../core/types';
 import { loadNotes, saveNotes } from '../storage/noteStorage';
