@@ -49,6 +49,14 @@ The offline transfer engine, implemented within the mobile app, now combines a t
 - The **OfflineTransferEngine** continues to enforce the note risk rules, signing outbound hops and validating inbound chains before storage.
 
 Transfers are recorded as cryptographic signatures on a note's transfer chain, enforcing a transitive transfer model similar to BitChat. Each hop is validated against the immutable `issuedTo` origin recorded in the note payload, so tampering with intermediate owners causes verification to fail. When running inside Expo Go (where native BLE modules are unavailable) the wallet automatically falls back to preparing JSON payloads that can be exchanged out-of-band—for example via QR codes, secure messaging, or copy/paste—while maintaining the same validation path once the payload is imported.
+The offline transfer engine, implemented within the mobile app, manages:
+
+- Device discovery via BLE and encrypted session establishment (available in custom native builds).
+- Exchange of signed note payloads.
+- Transfer-chain signature validation.
+- Hop-limit and expiry verification.
+
+Transfers are recorded as cryptographic signatures on a note's transfer chain, enforcing a transitive transfer model similar to BitChat. Each hop is validated against the immutable `issuedTo` origin recorded in the note payload, so tampering with intermediate owners causes verification to fail. When running the Expo project inside Expo Go the Bluetooth native module is unavailable, so the wallet focuses on preparing and validating JSON payloads that can be exchanged out-of-band (for example via QR code, messaging apps, or the built-in copy/paste flow used during demonstrations).
 
 ## 4.3 Digital Note Structure
 Each note is represented as a JSON payload:

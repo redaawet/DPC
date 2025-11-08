@@ -6,6 +6,10 @@ import { SafeAreaProvider, SafeAreaView } from 'react-native-safe-area-context';
 import type { DigitalNote } from './src/core/types';
 import { OfflineTransferEngine } from './src/offline/OfflineTransferEngine';
 import { useBluetoothTransfer } from './src/offline/useBluetoothTransfer';
+import { StatusBar } from 'expo-status-bar';
+
+import { MAX_OFFLINE_BALANCE } from './src/core/constants';
+import type { DigitalNote } from './src/core/types';
 import {
   createInitialWalletState,
   ensureKeyPair,
