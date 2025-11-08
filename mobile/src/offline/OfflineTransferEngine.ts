@@ -40,12 +40,25 @@ export class OfflineTransferEngine {
     recipientPublicKey: PublicKey,
     currentBalance: number,
   ): { updatedNote: DigitalNote; validation: TransferValidationResult } {
+    if (getNoteOwner(note) !== senderPublicKey) {
+      return { updatedNote: note, validation: { ok: false, reason: 'Sender is not the current note owner' } };
+    }
+
+    if (recipientPublicKey === senderPublicKey) {
+      return { updatedNote: note, validation: { ok: false, reason: 'Cannot transfer to the same wallet' } };
+    }
+
     if (note.transferChain.length >= MAX_HOPS) {
       return { updatedNote: note, validation: { ok: false, reason: 'Hop limit exceeded' } };
     }
 
     if (currentBalance < note.value) {
       return { updatedNote: note, validation: { ok: false, reason: 'Insufficient offline balance' } };
+    }
+
+    const expiryDate = new Date(note.expiry);
+    if (Number.isNaN(expiryDate.getTime()) || expiryDate.getTime() < Date.now()) {
+      return { updatedNote: note, validation: { ok: false, reason: 'Note has expired' } };
     }
 
     const transferEntry = signTransfer(note.noteId, senderPrivateKey, senderPublicKey, recipientPublicKey);
@@ -71,7 +84,7 @@ export class OfflineTransferEngine {
       return { ok: false, reason: 'Invalid transfer chain' };
     }
 
-    const owner = getNoteOwner(note, recipientPublicKey);
+    const owner = getNoteOwner(note);
     if (owner !== recipientPublicKey) {
       return { ok: false, reason: 'Transfer chain does not end with recipient' };
     }
