@@ -11,5 +11,9 @@
     "resolveJsonModule": true,
     "baseUrl": "./src"
   },
-  "include": ["App.tsx", "src/**/*"]
+  "include": [
+    "App.tsx",
+    "src/**/*"
+  ],
+  "extends": "expo/tsconfig.base"
 }
