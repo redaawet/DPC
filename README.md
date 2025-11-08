@@ -216,7 +216,7 @@ npm install
 npx expo start
 ```
 
-Use the Expo client (Android/iOS simulator or physical device) to load the project. The wallet expects the bank simulator to be reachable at `http://localhost:4000`; update `mobile/src/core/constants.ts` if you run the bank on a different host.
+Use the Expo client (Android/iOS simulator or physical device) to load the project. The app targets **Expo SDK 54**, so be sure to open it with an Expo Go release that matches SDK 54 (or build a local development client) to avoid compatibility errors. The wallet expects the bank simulator to be reachable at `http://localhost:4000`; update `mobile/src/core/constants.ts` if you run the bank on a different host.
 
 ### Creating a Downloadable Archive
 
